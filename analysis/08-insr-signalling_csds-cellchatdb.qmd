@@ -1,0 +1,1078 @@
+---
+title: "Difference in signalling between astrocytic Insr+/- groups of the hypothalamic paraventricular nucleus and Agrp or POMC neurons of Arc in response to chronic social stress"
+author: "Evgenii O. Tretiakov"
+format:
+    html:
+        toc: true
+        df-print: paged
+        code-fold: true
+        fig.width: 14
+        fig.height: 12
+jupyter: python3
+---
+
+```{python}
+import os
+import random
+import warnings
+import sklearn
+import scipy
+from watermark import watermark
+from sklearn.utils import check_random_state
+
+from gprofiler import GProfiler
+
+import matplotlib
+import pacmap
+import umap
+
+import scvelo as scv
+import scanpy as sc
+import cellrank as cr
+import anndata as ad
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import plotnine as p9
+import liana as li
+from liana.mt import rank_aggregate
+
+warnings.simplefilter("ignore", category=UserWarning)
+warnings.simplefilter("ignore", category=FutureWarning)
+warnings.simplefilter("ignore", category=DeprecationWarning)
+```
+
+
+### genes
+
+```{python}
+npr = [
+    "Adcyap1r1",
+    "Avpr1a",
+    "Calcr",
+    "Calcrl",
+    "Cckar",
+    "Cckbr",
+    "Cntfr",
+    "Crhr1",
+    "Crhr2",
+    "Esr1",
+    "Galr1",
+    "Galr2",
+    "Galr3",
+    "Ghr",
+    "Ghrhr",
+    "Ghsr",
+    "Glp1r",
+    "Gpr55",
+    "Gpr83",
+    "Gpr149",
+    "Grpr",
+    "Hcrtr1",
+    "Hcrtr2",
+    "Igf1r",
+    "Insr",
+    "Insrr",
+    "Kiss1r",
+    "Lepr",
+    "Mc1r",
+    "Mc3r",
+    "Mc4r",
+    "Mchr1",
+    "Nmbr",
+    "Nmur1",
+    "Nmur2",
+    "Npffr1",
+    "Npffr2",
+    "Npr1",
+    "Npr2",
+    "Npr3",
+    "Npsr1",
+    "Npsr2",
+    "Npy1r",
+    "Npy2r",
+    "Npy5r",
+    "Ntrk2",
+    "Ntsr1",
+    "Ntsr2",
+    "Oprd1",
+    "Oprk1",
+    "Oprl1",
+    "Oprm1",
+    "Oxtr",
+    "Prlhr",
+    "Prlr",
+    "Prokr2",
+    "Qrfpr",
+    "Rxfp1",
+    "Rxfp2",
+    "Sstr1",
+    "Sstr2",
+    "Sstr3",
+    "Tacr1",
+    "Tacr3",
+    "Trhr",
+    "Trhr2",
+    "Tshr",
+    "Vipr1",
+    "Vipr2",
+]
+
+npep = [
+    "Adcyap1",
+    "Agrp",
+    "Avp",
+    "Bdnf",
+    "Cartpt",
+    "Cck",
+    "Cntf",
+    "Crh",
+    "Gal",
+    "Ghrh",
+    "Ghrl",
+    "Grp",
+    "Hcrt",
+    "Kiss1",
+    "Lep",
+    "Nmb",
+    "Nms",
+    "Nmu",
+    "Npvf",
+    "Npw",
+    "Npy",
+    "Nts",
+    "Oxt",
+    "Pdyn",
+    "Penk",
+    "Pmch",
+    "Pnoc",
+    "Pomc",
+    "Qrfp",
+    "Reln",
+    "Rln1",
+    "Rln3",
+    "Sst",
+    "Tac1",
+    "Tac2",
+    "Trh",
+]
+
+genes_embed = [
+    "Abcd1",
+    "Abcd2",
+    "Abcd3",
+    "Acaa1",
+    "Acaa2",
+    "Acox1",
+    "Agt",
+    "Aldh1a1",
+    "Aldh1l1",
+    "Aldoc",
+    "Apoe",
+    "Aqp4",
+    "Caf4",
+    "Ckb",
+    "Cnr1",
+    "Cnr2",
+    "Cst3",
+    "Dagla",
+    "Daglb",
+    "Decr2",
+    "Dnm1",
+    "Drp1",
+    "Ech1",
+    "Egfr",
+    "Eno1",
+    "Faah",
+    "Fgfr3",
+    "Fis1",
+    "Fos",
+    "Fth1",
+    "Ftl1",
+    "Gfap",
+    "Gja1",
+    "Gli1",
+    "Glul",
+    "Hacd2",
+    "Hadhb",
+    "Hepacam",
+    "Hif1",
+    "Htra1",
+    "Lcat",
+    "Lpcat3",
+    "Insr",
+    "Mdv1",
+    "Mfn1",
+    "Mfn2",
+    "Mgll",
+    "Mief1",
+    "Napepld",
+    "Ndrg2",
+    "Nfia",
+    "Opa1",
+    "Otp",
+    "Pex1",
+    "Pex10",
+    "Pex12",
+    "Pex13",
+    "Pex14",
+    "Pex16",
+    "Pex2",
+    "Pex26",
+    "Pex3",
+    "Pex6",
+    "Pla2g7",
+    "Plcb1",
+    "Pygb",
+    "S100a6",
+    "S100b",
+    "Scd2",
+    "Sgcd",
+    "Slc1a2",
+    "Slc1a3",
+    "Slc4a4",
+    "Slc6a11",
+    "Slc7a10",
+    "Slc38a1",
+    "Slit1",
+    "Slit2",
+    "Sox9",
+    "Tafa1",
+    "Tkt",
+    "Trpv1",
+]
+
+nmr = [
+    "Adra1a",
+    "Adra1b",
+    "Adra1d",
+    "Adra2a",
+    "Adra2b",
+    "Adra2c",
+    "Adrb1",
+    "Adrb2",
+    "Adrb3",
+    "Adrbk1",
+    "Adrbk2",
+    "Adrm1",  # adrenergic receptors
+    "Adora1",
+    "Adora2a",
+    "Adora2b",
+    "Adora3",  # adenosine receptors
+    "Chrna1",
+    "Chrna2",
+    "Chrna3",
+    "Chrna4",
+    "Chrna5",
+    "Chrna6",
+    "Chrna7",
+    "Chrna9",
+    "Chrna10",
+    "Chrnb1",
+    "Chrnb2",
+    "Chrnb3",
+    "Chrnd",
+    "Chrng",  # cholinergic receptors
+    "Gria1",
+    "Gria2",
+    "Gria3",
+    "Gria4",  # iGlu AMPA receptors
+    "Grid1",
+    "Grid2",  # iGlu delta receptors
+    "Grik1",
+    "Grik2",
+    "Grik3",
+    "Grik4",
+    "Grik5",  # iGlu kainate receptors
+    "Grin1",
+    "Grin2a",
+    "Grin2b",
+    "Grin2c",
+    "Grin2d",
+    "Grin3a",
+    "Grin3b",  # iGlu NMDA receptors
+    "Grm1",
+    "Grm5",  # mGluRs 1
+    "Grm2",
+    "Grm3",  # mGluRs 2
+    "Grm4",
+    "Grm6",
+    "Grm7",
+    "Grm8",  # mGluRs 3
+    "Gabra1",
+    "Gabra2",
+    "Gabra3",
+    "Gabra4",
+    "Gabra5",
+    "Gabra6",
+    "Gabrb1",
+    "Gabrb2",
+    "Gabrb3",
+    "Gabrg1",
+    "Gabrg2",
+    "Gabrg3",
+    "Gabrd",
+    "Gabre",
+    "Gabrp",
+    "Gabrq",
+    "Gabrr1",
+    "Gabrr2",
+    "Gabrr3",
+    "Gabbr1",
+    "Gabbr2",  # GABA receptors
+    "Drd1",
+    "Drd2",
+    "Drd3",
+    "Drd4",
+    "Drd5",  # dopamine receptors
+    "Htr1a",
+    "Htr1b",
+    "Htr1d",
+    "Htr1f",
+    "Htr2a",
+    "Htr2b",
+    "Htr2c",
+    "Htr3a",
+    "Htr3b",
+    "Htr4",
+    "Htr5a",
+    "Htr5b",
+    "Htr6",
+    "Htr7",  # serotonin receptors
+    "Gnas",
+    "Gnai1",
+    "Gnai2",
+    "Gnai3",
+    "Gnao1",
+    "Gnao2",
+    "Gnaq",
+    "Gna11",
+    "Gna12",
+    "Gna13",
+    "Gnal",
+    "Gnasxl",  # G protein alpha subunit
+    "Gnb1",
+    "Gnb2",
+    "Gnb3",
+    "Gnb4",
+    "Gnb5",  # G protein beta subunit
+    "Gng2",
+    "Gng3",
+    "Gng4",
+    "Gng5",
+    "Gng7",
+    "Gng8",
+    "Gng10",
+    "Gng11",
+    "Gng12",
+    "Gng13",
+    "Gngt1",
+    "Gngt2",  # G protein gamma subunit
+    "P2rx1",
+    "P2rx2",
+    "P2rx3",
+    "P2rx4",
+    "P2rx5",
+    "P2rx6",
+    "P2rx7",
+    "P2ry1",
+    "P2ry2",
+    "P2ry4",
+    "P2ry6",
+    "P2ry12",
+    "P2ry13",
+    "P2ry14",  # purinergic receptors
+    "Ryr1",
+    "Ryr2",
+    "Ryr3",  # ryanodine receptors
+]
+```
+
+
+### parameters
+
+```{python}
+bioproject = "PRJNA679294"
+
+# Distance Metric to Use
+# metric = snakemake.params["metric"]
+metric = "euclidean"
+# connectivity_model = snakemake.params["connectivity_model"]
+connectivity_model = "min_tree"
+PLOTS_DIR = os.path.join("../output/figures/velocity-signalling/")
+os.makedirs(PLOTS_DIR, exist_ok=True)
+OUT_DIR = os.path.join("../data/velocity-signalling/")
+os.makedirs(OUT_DIR, exist_ok=True)
+
+# plotting params
+pt_size = 200
+dnsty = 0.8
+plt_size = [5, 5]
+
+SMALL_SIZE = 7
+MEDIUM_SIZE = 8
+BIGGER_SIZE = 12
+
+plt.rc("font", size=SMALL_SIZE)  # controls default text sizes
+plt.rc("axes", titlesize=SMALL_SIZE)  # fontsize of the axes title
+plt.rc("axes", labelsize=MEDIUM_SIZE)  # fontsize of the x and y labels
+plt.rc("xtick", labelsize=SMALL_SIZE)  # fontsize of the tick labels
+plt.rc("ytick", labelsize=SMALL_SIZE)  # fontsize of the tick labels
+plt.rc("legend", fontsize=SMALL_SIZE)  # legend fontsize
+plt.rc("figure", titlesize=BIGGER_SIZE)  # fontsize of the figure title
+matplotlib.rcParams["font.size"] = 11
+matplotlib.rcParams["pdf.use14corefonts"] = True
+matplotlib.rcParams["pdf.fonttype"] = 42
+matplotlib.rcParams["ps.fonttype"] = 42
+matplotlib.rcParams["font.family"] = "sans-serif"
+matplotlib.rcParams["font.sans-serif"] = ["Helvetica"]
+matplotlib.rcParams["figure.max_open_warning"] = 20000
+
+
+reseed = 42
+random.seed(reseed)
+np.random.seed(reseed)
+random_state = check_random_state(reseed)
+
+verbose = True
+sc.settings.verbosity = 2  # verbosity: errors (0), warnings (1), info (2), hints (3)
+scv.settings.set_figure_params("scvelo")
+sc.settings.figdir = PLOTS_DIR
+sc.settings.writedir = OUT_DIR
+sc.settings.set_figure_params(
+    dpi=120,
+    dpi_save=600,
+    vector_friendly=True,
+    format="pdf",
+    transparent=True,
+    color_map="gnuplot_r",
+)
+sc.settings.autoshow = False
+sc.settings.autosave = True
+
+# k = int(snakemake.params["k"])
+k = 20
+ks = k + 10
+npcs = 50
+npcs_selected = npcs - 20
+min_shared_umis = 15
+n_top_hvg = 3000
+cb_fpr = 0.001
+paga_threshold = 1.0
+spread = 2
+threads = 80
+svm_fit_strength = 100
+```
+
+
+### Load data
+
+```{python}
+housekeeping = f"/data/data/housekeeping_mouse.tsv"
+hk_genes1 = []
+with open(housekeeping) as file:
+    while hk_genes := file.readline():
+        hk_genes1.append(hk_genes.rstrip())
+```
+
+
+```{python}
+adata = sc.read_h5ad(
+    f"../data/class_cello/PRJNA679294-astrocytes_dataset-{cb_fpr}-initial_selection.h5ad"
+)
+
+adata.obs["cell_id"] = adata.obs_names
+
+alldata = sc.read_h5ad(
+    f"../data/class_cello/PRJNA679294-whole_dataset-{cb_fpr}-cello_annotation.h5ad"
+)
+alldata = alldata[alldata.obs["ora_celltype"].isin(["Astrocytes", "Neurons"])]
+
+adata_norm = alldata[alldata.obs["condit"] == 0]
+adata_chronic_stress = alldata[alldata.obs["condit"] == 1]
+
+# import data from the diet arc study of Deng et al., 2020
+adata_arc_neurons_norm = sc.read_h5ad(
+    "../../PRJNA604055/data/velocity-signalling/PRJNA604055-signalling-norm.h5ad"
+)
+
+adata_arc_neurons_hfhsdiet = sc.read_h5ad(
+    "../../PRJNA604055/data/velocity-signalling/PRJNA604055-signalling-treatment.h5ad"
+)
+```
+
+### Signalling analysis
+
+#### Normal conditions
+
+```{python}
+adata_norm.obs["k_tree"] = adata_norm.obs["k_tree"].astype("category")
+adata_norm.raw.X
+```
+
+subset groups of interest
+
+```{python}
+insr_pos_astro = adata_norm[
+    (adata_norm[:, "Insr"].to_df() > 1).stack().values
+    & (adata_norm.obs_names.isin(adata.obs_names)),
+    :,
+]
+insr_neg_astro = adata_norm[
+    (adata_norm[:, "Insr"].to_df() == 0).stack().values
+    & (adata_norm.obs_names.isin(adata.obs_names)),
+    :,
+]
+```
+
+```{python}
+adata_norm.obs["goi"] = adata_norm.obs["k_tree"]
+adata_norm.obs["goi"] = adata_norm.obs["goi"].cat.add_categories("Astro_INSR+")
+adata_norm.obs.loc[
+    lambda df: df.index.isin(insr_pos_astro.obs.index), "goi"
+] = "Astro_INSR+"
+adata_norm.obs["goi"] = adata_norm.obs["goi"].cat.add_categories("Astro_INSR-")
+adata_norm.obs.loc[
+    lambda df: df.index.isin(insr_neg_astro.obs.index), "goi"
+] = "Astro_INSR-"
+
+adata_norm = adata_norm[adata_norm.obs["goi"].isin(["Astro_INSR+", "Astro_INSR-"])]
+adata_norm.obs["goi"].cat.remove_unused_categories(inplace=True)
+```
+
+```{python}
+sc.pp.normalize_total(adata_norm, target_sum=1e4)
+sc.pp.log1p(adata_norm)
+# Concatenate the processed POMC and AGRP/NPY neurons!!!
+adata_norm = ad.concat([adata_norm, adata_arc_neurons_norm], join="inner")
+adata_norm.var_names = [x.upper() for x in adata_norm.var_names]
+adata_norm.raw = adata_norm
+adata_norm.obs["goi"] = pd.Categorical(adata_norm.obs["goi"])
+```
+
+```{python}
+li.mt.rank_aggregate(
+    adata_norm,
+    groupby="goi",
+    de_method="logreg",
+    expr_prop=0.05,
+    min_cells=3,
+    return_all_lrs=True,
+    verbose=False,
+    resource_name="cellchatdb",
+    n_perms=100000,
+    seed=reseed,
+)
+```
+
+
+```{python}
+adata_norm.uns["liana_res"].to_csv("pvn_astro-with_npy_pomc-liana-res-cellchatdb.csv")
+adata_norm.uns["liana_res"].head()
+```
+
+```{python}
+n2a_norm = li.pl.dotplot(
+    adata=adata_norm,
+    colour="magnitude_rank",
+    size="specificity_rank",
+    inverse_size=True,
+    inverse_colour=True,
+    source_labels=["POMC neurons", "AGRP/NPY neurons"],
+    target_labels=["Astro_INSR+", "Astro_INSR-"],
+    top_n=20,
+    orderby="lr_probs",
+    orderby_ascending=False,
+    figure_size=(8, 10),
+)
+
+(
+    n2a_norm
+    +
+    # change theme
+    p9.theme_tufte()
+    +
+    # modify theme
+    p9.theme(
+        # adjust facet size
+        strip_text=p9.element_text(size=12)
+    )
+)
+n2a_norm.save(
+    filename="liana-dotplot-logfc-normal-conditions-n2a-insr-status-cellchatdb.pdf"
+)
+```
+
+```{python}
+n2a_norm = li.pl.dotplot(
+    adata=adata_norm,
+    colour="magnitude_rank",
+    size="specificity_rank",
+    inverse_size=True,
+    inverse_colour=True,
+    source_labels=["POMC neurons", "AGRP/NPY neurons"],
+    target_labels=["Astro_INSR+", "Astro_INSR-"],
+    filterby="magnitude_rank",
+    filter_lambda=lambda x: x <= 0.01,
+    top_n=20,
+    orderby="specificity_rank",
+    orderby_ascending=True,
+    figure_size=(8, 10),
+)
+
+(
+    n2a_norm
+    +
+    # change theme
+    p9.theme_tufte()
+    +
+    # modify theme
+    p9.theme(
+        # adjust facet size
+        strip_text=p9.element_text(size=12)
+    )
+)
+n2a_norm.save(
+    filename="liana-dotplot-specificity_rank-normal-conditions-n2a-insr-status-cellchatdb.pdf"
+)
+```
+
+```{python}
+n2a_norm = li.pl.dotplot(
+    adata=adata_norm,
+    colour="magnitude_rank",
+    size="specificity_rank",
+    inverse_size=True,
+    inverse_colour=True,
+    source_labels=["POMC neurons", "AGRP/NPY neurons"],
+    target_labels=["Astro_INSR+", "Astro_INSR-"],
+    filterby="specificity_rank",
+    filter_lambda=lambda x: x <= 0.01,
+    top_n=20,
+    orderby="magnitude_rank",
+    orderby_ascending=True,
+    figure_size=(8, 10),
+)
+
+(
+    n2a_norm
+    +
+    # change theme
+    p9.theme_tufte()
+    +
+    # modify theme
+    p9.theme(
+        # adjust facet size
+        strip_text=p9.element_text(size=12)
+    )
+)
+n2a_norm.save(
+    filename="liana-dotplot-magnitude_rank-normal-conditions-n2a-insr-status-cellchatdb.pdf"
+)
+```
+
+```{python}
+a2n_norm = li.pl.dotplot(
+    adata=adata_norm,
+    colour="magnitude_rank",
+    size="specificity_rank",
+    inverse_size=True,
+    inverse_colour=True,
+    source_labels=["Astro_INSR+", "Astro_INSR-"],
+    target_labels=["POMC neurons", "AGRP/NPY neurons"],
+    top_n=20,
+    orderby="lr_probs",
+    orderby_ascending=False,
+    figure_size=(8, 10),
+)
+
+(
+    a2n_norm
+    +
+    # change theme
+    p9.theme_tufte()
+    +
+    # modify theme
+    p9.theme(
+        # adjust facet size
+        strip_text=p9.element_text(size=12)
+    )
+)
+a2n_norm.save(
+    filename="liana-dotplot-logfc-normal-conditions-a2n-insr-status-cellchatdb.pdf"
+)
+```
+
+```{python}
+a2n_norm = li.pl.dotplot(
+    adata=adata_norm,
+    colour="magnitude_rank",
+    size="specificity_rank",
+    inverse_size=True,
+    inverse_colour=True,
+    source_labels=["Astro_INSR+", "Astro_INSR-"],
+    target_labels=["POMC neurons", "AGRP/NPY neurons"],
+    filterby="magnitude_rank",
+    filter_lambda=lambda x: x <= 0.01,
+    top_n=20,
+    orderby="specificity_rank",
+    orderby_ascending=True,
+    figure_size=(8, 10),
+)
+
+(
+    a2n_norm
+    +
+    # change theme
+    p9.theme_tufte()
+    +
+    # modify theme
+    p9.theme(
+        # adjust facet size
+        strip_text=p9.element_text(size=12)
+    )
+)
+a2n_norm.save(
+    filename="liana-dotplot-specificity_rank-normal-conditions-a2n-insr-status-cellchatdb.pdf"
+)
+```
+
+```{python}
+a2n_norm = li.pl.dotplot(
+    adata=adata_norm,
+    colour="magnitude_rank",
+    size="specificity_rank",
+    inverse_size=True,
+    inverse_colour=True,
+    source_labels=["Astro_INSR+", "Astro_INSR-"],
+    target_labels=["POMC neurons", "AGRP/NPY neurons"],
+    filterby="specificity_rank",
+    filter_lambda=lambda x: x <= 0.01,
+    top_n=20,
+    orderby="magnitude_rank",
+    orderby_ascending=True,
+    figure_size=(8, 10),
+)
+
+(
+    a2n_norm
+    +
+    # change theme
+    p9.theme_tufte()
+    +
+    # modify theme
+    p9.theme(
+        # adjust facet size
+        strip_text=p9.element_text(size=12)
+    )
+)
+a2n_norm.save(
+    filename="liana-dotplot-magnitude_rank-normal-conditions-a2n-insr-status-cellchatdb.pdf"
+)
+```
+
+Save data
+
+```{python}
+adata_norm.write(
+    f"/data/{bioproject}/data/velocity-signalling/{bioproject}-signalling-norm-insr-status-cellchatdb.h5ad"
+)
+```
+
+
+#### Chronic Stress Model
+
+```{python}
+adata_chronic_stress.obs["k_tree"] = adata_chronic_stress.obs["k_tree"].astype(
+    "category"
+)
+adata_chronic_stress.raw.X
+```
+
+subset groups of interest
+
+```{python}
+insr_pos_astro = adata_chronic_stress[
+    (adata_chronic_stress[:, "Insr"].to_df() > 1).stack().values
+    & (adata_chronic_stress.obs_names.isin(adata.obs_names)),
+    :,
+]
+insr_neg_astro = adata_chronic_stress[
+    (adata_chronic_stress[:, "Insr"].to_df() == 0).stack().values
+    & (adata_chronic_stress.obs_names.isin(adata.obs_names)),
+    :,
+]
+```
+
+```{python}
+adata_chronic_stress.obs["goi"] = adata_chronic_stress.obs["k_tree"]
+adata_chronic_stress.obs["goi"] = adata_chronic_stress.obs["goi"].cat.add_categories(
+    "Astro_INSR+"
+)
+adata_chronic_stress.obs.loc[
+    lambda df: df.index.isin(insr_pos_astro.obs.index), "goi"
+] = "Astro_INSR+"
+adata_chronic_stress.obs["goi"] = adata_chronic_stress.obs["goi"].cat.add_categories(
+    "Astro_INSR-"
+)
+adata_chronic_stress.obs.loc[
+    lambda df: df.index.isin(insr_neg_astro.obs.index), "goi"
+] = "Astro_INSR-"
+
+adata_chronic_stress = adata_chronic_stress[
+    adata_chronic_stress.obs["goi"].isin(["Astro_INSR+", "Astro_INSR-"])
+]
+adata_chronic_stress.obs["goi"].cat.remove_unused_categories(inplace=True)
+```
+
+```{python}
+sc.pp.normalize_total(adata_chronic_stress, target_sum=1e4)
+sc.pp.log1p(adata_chronic_stress)
+# Concatenate the processed POMC and AGRP/NPY neurons in HFHS diet condition!!!
+adata_chronic_stress = ad.concat(
+    [adata_chronic_stress, adata_arc_neurons_hfhsdiet], join="inner"
+)
+adata_chronic_stress.var_names = [x.upper() for x in adata_chronic_stress.var_names]
+adata_chronic_stress.raw = adata_chronic_stress
+adata_chronic_stress.obs["goi"] = pd.Categorical(adata_chronic_stress.obs["goi"])
+```
+
+```{python}
+li.mt.rank_aggregate(
+    adata_chronic_stress,
+    groupby="goi",
+    de_method="logreg",
+    expr_prop=0.05,
+    min_cells=3,
+    return_all_lrs=True,
+    verbose=False,
+    resource_name="cellchatdb",
+    n_perms=100000,
+    seed=reseed,
+)
+```
+
+```{python}
+adata_chronic_stress.uns["liana_res"].to_csv(
+    "chronic-stress-pvn_astro-with_npy_pomc-liana-res-cellchatdb.csv"
+)
+adata_chronic_stress.uns["liana_res"].head()
+```
+
+```{python}
+n2a_chronic_stress = li.pl.dotplot(
+    adata=adata_chronic_stress,
+    colour="magnitude_rank",
+    size="specificity_rank",
+    inverse_size=True,
+    inverse_colour=True,
+    source_labels=["POMC neurons", "AGRP/NPY neurons"],
+    target_labels=["Astro_INSR+", "Astro_INSR-"],
+    top_n=20,
+    orderby="lr_probs",
+    orderby_ascending=False,
+    figure_size=(8, 10),
+)
+
+(
+    n2a_chronic_stress
+    +
+    # change theme
+    p9.theme_tufte()
+    +
+    # modify theme
+    p9.theme(
+        # adjust facet size
+        strip_text=p9.element_text(size=12)
+    )
+)
+n2a_chronic_stress.save(
+    filename="liana-dotplot-logfc-chronic-stress-n2a-insr-status-cellchatdb.pdf"
+)
+```
+
+```{python}
+n2a_chronic_stress = li.pl.dotplot(
+    adata=adata_chronic_stress,
+    colour="magnitude_rank",
+    size="specificity_rank",
+    inverse_size=True,
+    inverse_colour=True,
+    source_labels=["POMC neurons", "AGRP/NPY neurons"],
+    target_labels=["Astro_INSR+", "Astro_INSR-"],
+    filterby="magnitude_rank",
+    filter_lambda=lambda x: x <= 0.01,
+    top_n=20,
+    orderby="specificity_rank",
+    orderby_ascending=True,
+    figure_size=(8, 10),
+)
+
+(
+    n2a_chronic_stress
+    +
+    # change theme
+    p9.theme_tufte()
+    +
+    # modify theme
+    p9.theme(
+        # adjust facet size
+        strip_text=p9.element_text(size=12)
+    )
+)
+n2a_chronic_stress.save(
+    filename="liana-dotplot-specificity_rank-chronic-stress-n2a-insr-status-cellchatdb.pdf"
+)
+```
+
+```{python}
+n2a_chronic_stress = li.pl.dotplot(
+    adata=adata_chronic_stress,
+    colour="magnitude_rank",
+    size="specificity_rank",
+    inverse_size=True,
+    inverse_colour=True,
+    source_labels=["POMC neurons", "AGRP/NPY neurons"],
+    target_labels=["Astro_INSR+", "Astro_INSR-"],
+    filterby="specificity_rank",
+    filter_lambda=lambda x: x <= 0.01,
+    top_n=20,
+    orderby="magnitude_rank",
+    orderby_ascending=True,
+    figure_size=(8, 10),
+)
+
+(
+    n2a_chronic_stress
+    +
+    # change theme
+    p9.theme_tufte()
+    +
+    # modify theme
+    p9.theme(
+        # adjust facet size
+        strip_text=p9.element_text(size=12)
+    )
+)
+n2a_chronic_stress.save(
+    filename="liana-dotplot-magnitude_rank-chronic-stress-n2a-insr-status-cellchatdb.pdf"
+)
+```
+
+
+```{python}
+a2n_chronic_stress = li.pl.dotplot(
+    adata=adata_chronic_stress,
+    colour="magnitude_rank",
+    size="specificity_rank",
+    inverse_size=True,
+    inverse_colour=True,
+    source_labels=["Astro_INSR+", "Astro_INSR-"],
+    target_labels=["POMC neurons", "AGRP/NPY neurons"],
+    top_n=20,
+    orderby="lr_probs",
+    orderby_ascending=False,
+    figure_size=(8, 10),
+)
+
+(
+    a2n_chronic_stress
+    +
+    # change theme
+    p9.theme_tufte()
+    +
+    # modify theme
+    p9.theme(
+        # adjust facet size
+        strip_text=p9.element_text(size=12)
+    )
+)
+a2n_chronic_stress.save(
+    filename="liana-dotplot-logfc-chronic-stress-a2n-insr-status-cellchatdb.pdf"
+)
+```
+
+```{python}
+a2n_chronic_stress = li.pl.dotplot(
+    adata=adata_chronic_stress,
+    colour="magnitude_rank",
+    size="specificity_rank",
+    inverse_size=True,
+    inverse_colour=True,
+    source_labels=["Astro_INSR+", "Astro_INSR-"],
+    target_labels=["POMC neurons", "AGRP/NPY neurons"],
+    filterby="magnitude_rank",
+    filter_lambda=lambda x: x <= 0.01,
+    top_n=20,
+    orderby="specificity_rank",
+    orderby_ascending=True,
+    figure_size=(8, 10),
+)
+
+(
+    a2n_chronic_stress
+    +
+    # change theme
+    p9.theme_tufte()
+    +
+    # modify theme
+    p9.theme(
+        # adjust facet size
+        strip_text=p9.element_text(size=12)
+    )
+)
+a2n_chronic_stress.save(
+    filename="liana-dotplot-specificity_rank-chronic-stress-a2n-insr-status-cellchatdb.pdf"
+)
+```
+
+```{python}
+a2n_chronic_stress = li.pl.dotplot(
+    adata=adata_chronic_stress,
+    colour="magnitude_rank",
+    size="specificity_rank",
+    inverse_size=True,
+    inverse_colour=True,
+    source_labels=["Astro_INSR+", "Astro_INSR-"],
+    target_labels=["POMC neurons", "AGRP/NPY neurons"],
+    filterby="specificity_rank",
+    filter_lambda=lambda x: x <= 0.01,
+    top_n=20,
+    orderby="magnitude_rank",
+    orderby_ascending=True,
+    figure_size=(8, 10),
+)
+
+(
+    a2n_chronic_stress
+    +
+    # change theme
+    p9.theme_tufte()
+    +
+    # modify theme
+    p9.theme(
+        # adjust facet size
+        strip_text=p9.element_text(size=12)
+    )
+)
+a2n_chronic_stress.save(
+    filename="liana-dotplot-magnitude_rank-chronic-stress-a2n-insr-status-cellchatdb.pdf"
+)
+```
+
+Save data
+
+```{python}
+adata_chronic_stress.write(
+    f"/data/{bioproject}/data/velocity-signalling/{bioproject}-signalling-treatment-insr-status-cellchatdb.h5ad"
+)
+```
+
+
+Session information
+
+```{python}
+print(watermark())
+print(watermark(iversions=True, globals_=globals()))
+```
+

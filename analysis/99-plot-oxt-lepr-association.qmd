@@ -1,0 +1,472 @@
+---
+title: "Analysis of association between Lepr and Oxt expression in magnocelular neurons of hypothalamic PVN (Lopez et al., 2021)"
+author: "Evgenii O. Tretiakov"
+date: "`r Sys.Date()`"
+format:
+  html:
+    toc: true
+    df-print: paged
+    code-fold: true
+    fig-width: 9
+    fig-height: 12
+    fig-format: retina
+    fig-responsive: true
+    fig-dpi: 200
+execute:
+  keep-md: false
+  echo: true
+  error: false
+  message: false
+  warning: false
+  debug: false
+knitr:
+  opts_chunk:
+    autodep: true
+    fig.align: center
+    fig.retina: 2
+    fig.width: 14
+    fig.height: 12
+---
+
+```{r setup, include = FALSE}
+DOCNAME <- "plot-Lepr-Oxt-association-magnocellular-neurons-pvn"
+NOW <- Sys.time()
+
+# Time chunks during knitting
+knitr::knit_hooks$set(timeit = function(before) {
+  if (before) {
+    print(paste("Start:", Sys.time()))
+    NOW <<- Sys.time()
+  } else {
+    print(paste("Stop:", Sys.time()))
+    print(Sys.time() - NOW)
+  }
+})
+
+knitr::knit_hooks$set(debug = function(before, options, envir) {
+  if (!before) {
+    message(
+      paste(names(envir), as.list(envir),
+        sep = " = ", collapse = "\n"
+      )
+    )
+  }
+})
+
+knitr::opts_chunk$set(
+  cache          = FALSE,
+  dev            = c("png", "pdf"),
+  timeit         = TRUE
+)
+```
+
+## Load data and setup parameters
+
+```{r libraries, cache=FALSE}
+Sys.setenv(RETICULATE_PYTHON = "/opt/python/3.8.8/bin/python")
+
+# Load tidyverse infrastructure packages
+suppressPackageStartupMessages({
+  library(future)
+  library(here)
+  library(tidyverse)
+  library(magrittr)
+  library(stringr)
+  library(skimr)
+  library(RColorBrewer)
+  library(viridis)
+})
+reticulate::use_condaenv("/opt/python/3.8.8/bin/python")
+
+# Load packages for scRNA-seq analysis and visualisation
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(cowplot)
+  library(patchwork)
+  library(ggstatsplot)
+  library(sceasy)
+  library(Seurat)
+  library(SeuratDisk)
+  library(SeuratWrappers)
+  library(schex)
+  library(scCustomize)
+})
+```
+
+### Set paths
+
+```{r paths}
+src_dir <- here("code/")
+data_dir <- here("data/")
+output_dir <- here("output")
+plots_dir <- here(output_dir, "figures/")
+tables_dir <- here(output_dir, "tables/")
+```
+
+### Load helper functions and gene-sets
+
+```{r source, cache = FALSE}
+source(here(src_dir, "genes.R"))
+source(here(src_dir, "functions.R"))
+```
+
+### Set fixed variables
+
+```{r params-computation, cache = FALSE}
+# set seed
+reseed <- 42
+set.seed(seed = reseed)
+
+# Parameters for parallel execution
+n_cores <- 8
+plan("multisession", workers = n_cores)
+options(
+  future.globals.maxSize = 1999999 * 1024^2,
+  future.rng.onMisuse = "ignore"
+)
+plan()
+
+
+# ggplot2 theme
+theme_set(ggmin::theme_powerpoint())
+```
+
+```{r params}
+bioproject <- "PRJNA679294"
+cb_fpr <- 0.001
+
+refine_metadata_levels <- function(seurat_data) {
+  for (i in base::colnames(seurat_data@meta.data)) {
+    if (base::is.factor(seurat_data@meta.data[[i]])) {
+      base::print(base::paste("Re-evaluating levels for a factor column", i))
+      base::print(base::paste("before:", base::paste(
+        base::levels(seurat_data@meta.data[[i]]), collapse = ", "
+      )))
+      seurat_data@meta.data[[i]] <-
+        base::droplevels(seurat_data@meta.data[[i]])  # need to drop levels of the removed values
+      base::print(base::paste("after:", base::paste(
+        base::levels(seurat_data@meta.data[[i]]), collapse = ", "
+      )))
+    }
+  }
+  return(seurat_data)
+}
+```
+
+## Load predicted Neurons data
+
+```{r load-seurat}
+srt_path <- here(
+  data_dir,
+  sprintf("%s-whole_dataset-fpr_%s-clusters.h5Seurat",
+          bioproject, cb_fpr)
+)
+
+srt <- LoadH5Seurat(file = srt_path)
+srt <- refine_metadata_levels(srt)
+
+metadata <- read_tsv(here(
+  tables_dir, "class_cello",
+  sprintf("%s-whole_dataset-%s-CellO_output.tsv",
+          bioproject, cb_fpr)))
+metadata$ora_celltype |> table()
+
+metadata_m <- 
+  metadata |>
+  select(!c(`...1`:log10GenesPerUMI,
+            barcode:SCT_snn_res.4.00000100000002)) |>
+  full_join(srt@meta.data)
+
+glimpse(metadata_m)
+rownames(metadata_m) <- metadata_m$cell_name
+srt@meta.data <- metadata_m[colnames(srt), ]
+rownames(srt@meta.data) <- colnames(srt)
+
+srt <-
+  Store_Palette_Seurat(
+    seurat_object = srt,
+    palette = c(
+      "#ffff00", "#fae200", "#f4c500", "#eeab00", "#e99500",
+      "#e37f00", "#dd6b00", "#d75b00", "#d04c00", "#c93e00",
+      "#c33300", "#bc2800", "#b42003", "#ad1941", "#a41281",
+      "#9c0db7", "#9309dd", "#8906f7", "#7f04ff", "#7402f6",
+      "#6701db", "#5900b0", "#49007e", "#32003e", "#000000"
+    ),
+    palette_name = "expr_Colour_Palette_gnuplot_rette_gnuplot_r")
+
+srt <-
+  Store_Palette_Seurat(
+    seurat_object = srt,
+    palette = rev(brewer.pal(n = 11, name = "Spectral")),
+    palette_name = "div_Colour_Pal"
+  )
+
+colours_code <- c(
+  "0" = "grey30",
+  "1" = "blue",
+  "2" = "skyblue",
+  "3" = "forestgreen",
+  "4" = "greenyellow",
+  "5" = "yellow",
+  "6" = "orangered",
+  "7" = "grey70"
+)
+
+colours_region <- c(
+  "ARC" = "grey30",
+  "LHA" = "blue",
+  "MnPO" = "skyblue",
+  "POA" = "forestgreen",
+  "PVN" = "greenyellow",
+  "SCN" = "yellow",
+  "VMH" = "orangered",
+  "VPH" = "grey70"
+)
+
+coded_region <- c(
+  "0" = "ARC" ,
+  "1" = "LHA" ,
+  "2" = "MnPO",
+  "3" = "POA" ,
+  "4" = "PVN" ,
+  "5" = "SCN" ,
+  "6" = "VMH" ,
+  "7" = "VPH"
+)
+
+print(srt)
+invisible(gc())
+```
+
+```{r subset-neurons}
+Idents(object = srt) <- "ora_celltype"
+srt <- subset(x = srt, idents = "Neurons")
+DefaultAssay(srt) <- "RNA"
+srt <- refine_metadata_levels(srt)
+print(srt)
+```
+
+## Preprocess data
+
+```{r scale-data}
+srt <-
+  FindVariableFeatures(
+    srt,
+    selection.method = "vst",
+    nfeatures = 3000
+  )
+top100 <- head(VariableFeatures(srt), 100)
+plot5 <- VariableFeaturePlot(srt)
+LabelPoints(plot = plot5, points = top100, repel = TRUE, xnudge = 0, ynudge = 0)
+
+hvg <- VariableFeatures(srt)
+var_regex <- "^Hla-|^Ig[hjkl]|^Rna|^mt-|^Rp[sl]|^Hb[^(p)]|^Gm"
+hvg <- hvg[str_detect(pattern = var_regex, string = hvg, negate = TRUE)]
+
+srt <- ScaleData(srt, features = hvg)
+
+npcs <- 50
+srt <- RunPCA(srt,
+  features = hvg,
+  npcs = npcs,
+  seed.use = reseed,
+  verbose = TRUE
+)
+
+srt <-
+  JackStraw(
+    object = srt,
+    assay = "RNA",
+    reduction = "pca",
+    dims = npcs,
+    num.replicate = 100,
+    prop.freq = 0.02,
+    maxit = 1000
+  )
+srt <-
+  ScoreJackStraw(srt,
+    dims = seq_along(srt[["pca"]]@stdev)
+  )
+JackStrawPlot(srt, dims = seq_along(srt[["pca"]]@stdev))
+
+test_pc <-
+  pc_score(
+    object = srt,
+    PCs = seq_along(srt[["pca"]]@stdev),
+    score.thresh = 1e-05
+  )
+selected_pcs <-
+  seq_along(srt[["pca"]]@stdev)[
+    test_pc$Score <= 1e-05 &
+      (srt[["pca"]]@stdev >
+        quantile(srt[["pca"]]@stdev, .10))
+  ]
+
+srt <-
+  srt |>
+  FindNeighbors(
+    dims = selected_pcs,
+    k.param = 25,
+    annoy.metric = "euclidean",
+    n.trees = 100,
+    verbose = FALSE
+  ) |>
+  RunUMAP(
+    dims = selected_pcs,
+    reduction.name = "umap",
+    reduction.key = "UMAP_",
+    return.model = FALSE,
+    umap.method = "uwot",
+    n.epochs = 1000L,
+    n.neighbors = 25L,
+    min.dist = 0.01,
+    spread = 2L,
+    metric = "correlation",
+    init = "pca",
+    seed.use = reseed,
+    verbose = FALSE
+  )
+
+print(srt)
+glimpse(srt@meta.data)
+
+invisible(gc())
+
+Idents(srt) <- "k_tree"
+```
+
+```{r pca12-gfeatures}
+FeaturePlot_scCustom(srt, reduction = "pca", features = c("Slc32a1", "Slc17a6", "Oxt", "Rbfox3", "Elavl4", "Stmn2", "Fos", "Nr4a2", "Nr5a1"), num_columns = 3, alpha_exp = 0.75)
+```
+
+```{r pca23-gfeatures}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(2, 3), features = c("Slc32a1", "Slc17a6", "Oxt", "Rbfox3", "Elavl4", "Stmn2", "Fos", "Nr4a2", "Nr5a1"), num_columns = 3, alpha_exp = 0.75)
+```
+
+```{r pca34-gfeatures}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(3, 4), features = c("Slc32a1", "Slc17a6", "Oxt", "Rbfox3", "Elavl4", "Stmn2", "Fos", "Nr4a2", "Nr5a1"), num_columns = 3, alpha_exp = 0.75)
+```
+
+```{r pca45-gfeatures}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(4, 5), features = c("Slc32a1", "Slc17a6", "Oxt", "Rbfox3", "Elavl4", "Stmn2", "Fos", "Nr4a2", "Nr5a1"), num_columns = 3, alpha_exp = 0.75)
+```
+
+```{r pca56-gfeatures}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(5, 6), features = c("Slc32a1", "Slc17a6", "Oxt", "Rbfox3", "Elavl4", "Stmn2", "Fos", "Nr4a2", "Nr5a1"), num_columns = 3, alpha_exp = 0.75)
+```
+
+```{r pca67-gfeatures}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(6, 7), features = c("Slc32a1", "Slc17a6", "Oxt", "Rbfox3", "Elavl4", "Stmn2", "Fos", "Nr4a2", "Nr5a1"), num_columns = 3, alpha_exp = 0.75)
+```
+
+
+```{r pca78-gfeatures}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(7, 8), features = c("Slc32a1", "Slc17a6", "Oxt", "Rbfox3", "Elavl4", "Stmn2", "Fos", "Nr4a2", "Nr5a1"), num_columns = 3, alpha_exp = 0.75)
+```
+
+```{r pca89-gfeatures}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(8, 9), features = c("Slc32a1", "Slc17a6", "Oxt", "Rbfox3", "Elavl4", "Stmn2", "Fos", "Nr4a2", "Nr5a1"), num_columns = 3, alpha_exp = 0.75)
+```
+
+```{r pca-features}
+FeaturePlot_scCustom(srt, reduction = "pca", features = c("Oxt", "Slc17a6", "Lepr", "Nr5a1"), num_columns = 2, alpha_exp = 0.75)
+```
+
+```{r pca23-features}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(2, 3), features = c("Oxt", "Slc17a6", "Lepr", "Nr5a1"), num_columns = 2, alpha_exp = 0.75, slot = "counts")
+```
+
+```{r pca23-features-counts}
+FeaturePlot(srt, reduction = "pca", dims = c(2, 3), features = c("Oxt", "Lepr"), ncol = 2, slot = "counts", order = TRUE)
+```
+
+```{r pca34-features}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(3, 4), features = c("Oxt", "Slc17a6", "Lepr", "Nr5a1"), num_columns = 2, alpha_exp = 0.75)
+```
+
+```{r pca45-features}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(4, 5), features = c("Oxt", "Slc17a6", "Lepr", "Nr5a1"), num_columns = 2, alpha_exp = 0.75)
+```
+
+```{r pca56-features}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(5, 6), features = c("Oxt", "Slc17a6", "Lepr", "Nr5a1"), num_columns = 2, alpha_exp = 0.75)
+```
+
+```{r pca67-features}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(6, 7), features = c("Oxt", "Slc17a6", "Lepr", "Nr5a1"), num_columns = 2, alpha_exp = 0.75)
+```
+
+```{r pca78-features}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(7, 8), features = c("Oxt", "Slc17a6", "Lepr", "Nr5a1"), num_columns = 2, alpha_exp = 0.75)
+```
+
+```{r pca89-features}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(8, 9), features = c("Oxt", "Slc17a6", "Lepr", "Nr5a1"), num_columns = 2, alpha_exp = 0.75)
+```
+
+```{r pca910-features}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(9, 10), features = c("Oxt", "Slc17a6", "Lepr", "Nr5a1"), num_columns = 2, alpha_exp = 0.75)
+```
+
+```{r pca1011-features}
+FeaturePlot_scCustom(srt, reduction = "pca", dims = c(10, 11), features = c("Oxt", "Slc17a6", "Lepr", "Nr5a1"), num_columns = 2, alpha_exp = 0.75)
+```
+
+```{r pc2, fig.asp=1.618}
+PC_Plotting(seurat_object = srt, dim_number = 3)
+```
+
+```{r pc4, fig.asp=1.618}
+PC_Plotting(seurat_object = srt, dim_number = 4)
+```
+
+
+```{r umap-features}
+FeaturePlot_scCustom(srt, reduction = "umap", features = c("Oxt", "Slc17a6", "Lepr", "Nr5a1"), num_columns = 2, alpha_exp = 0.75)
+```
+
+```{r umap-features2}
+FeaturePlot(srt, reduction = "umap", features = c("Oxt", "Slc17a6", "Lepr", "Nr5a1"), ncol = 2, slot = "counts", order = TRUE)
+```
+
+```{r plot-Oxt-positive}
+mtx_stat <- GetAssayData(object = srt, slot = "count", assay = "RNA") %>%
+  as.data.frame() %>%
+  t() %>%
+  as.data.frame() %>%
+  select(Lepr, Oxt) %>%
+  dplyr::bind_cols(srt@meta.data) %>%
+  select(cell_name:var_regex, k_tree, Phase, Lepr, Oxt)
+
+ggscatterstats(mtx_stat, Oxt, Lepr)
+```
+
+```{r plot-Oxt-positive-norm}
+mtx_stat <- GetAssayData(object = srt, slot = "data", assay = "RNA") %>%
+  as.data.frame() %>%
+  t() %>%
+  as.data.frame() %>%
+  select(Lepr, Oxt) %>%
+  dplyr::bind_cols(srt@meta.data) %>%
+  select(cell_name:var_regex, k_tree, Phase, Lepr, Oxt)
+
+ggscatterstats(mtx_stat, Oxt, Lepr)
+```
+
+```{r subset-Oxt-positive}
+srt <- subset(srt, slot = "counts", subset = Oxt > 0)
+FeaturePlot(srt, reduction = "umap", features = c("Oxt", "Lepr"), ncol = 2, slot = "counts", order = TRUE)
+```
+
+```{r pca23-features-counts-sub}
+FeaturePlot(srt, reduction = "pca", dims = c(2, 3), features = c("Oxt", "Lepr"), ncol = 2, slot = "counts", order = TRUE)
+```
+
+## Session information
+
+```{r session-info, cache = FALSE}
+sI <- sessioninfo::session_info()
+sI$loadedOnly <- NULL
+print(sI, locale = FALSE)
+```
+

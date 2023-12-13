@@ -1,0 +1,907 @@
+---
+title: "The analysis of the hypothalamic paraventricular nucleus response to chronic stress and metabolic change of Lxn positive versus negative astrocytes"
+author: "Evgenii O. Tretiakov"
+format:
+    html:
+        toc: true
+        df-print: paged
+        code-fold: true
+        fig.width: 14
+        fig.height: 12
+jupyter: python3
+---
+
+```{python}
+!git clone -b docs https://github.com/YosefLab/Compass.git --depth 1
+!cp ./Compass/notebooks/compass_analysis.py ./compass_analysis.py
+```
+
+```{python}
+import os
+import random
+import warnings
+from watermark import watermark
+import scipy
+from sklearn.utils import check_random_state
+
+import matplotlib
+
+import scanpy as sc
+import anndata as ad
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from compass_analysis import cohens_d, wilcoxon_test, get_reaction_consistencies, labeled_reactions, amino_acid_metab
+
+warnings.simplefilter("ignore", category=UserWarning)
+warnings.simplefilter("ignore", category=FutureWarning)
+warnings.simplefilter("ignore", category=DeprecationWarning)
+```
+
+### parameters
+
+```{python}
+bioproject = "PRJNA679294"
+
+# Distance Metric to Use
+# metric = snakemake.params["metric"]
+metric = "euclidean"
+# connectivity_model = snakemake.params["connectivity_model"]
+connectivity_model = "min_tree"
+PLOTS_DIR = os.path.join("../output/figures/velocity-signalling/")
+os.makedirs(PLOTS_DIR, exist_ok=True)
+OUT_DIR = os.path.join("../data/velocity-signalling/")
+os.makedirs(OUT_DIR, exist_ok=True)
+
+# plotting params
+pt_size = 200
+dnsty = 0.8
+plt_size = [5, 5]
+
+SMALL_SIZE = 7
+MEDIUM_SIZE = 8
+BIGGER_SIZE = 12
+
+plt.rc("font", size=SMALL_SIZE)  # controls default text sizes
+plt.rc("axes", titlesize=SMALL_SIZE)  # fontsize of the axes title
+plt.rc("axes", labelsize=MEDIUM_SIZE)  # fontsize of the x and y labels
+plt.rc("xtick", labelsize=SMALL_SIZE)  # fontsize of the tick labels
+plt.rc("ytick", labelsize=SMALL_SIZE)  # fontsize of the tick labels
+plt.rc("legend", fontsize=SMALL_SIZE)  # legend fontsize
+plt.rc("figure", titlesize=BIGGER_SIZE)  # fontsize of the figure title
+matplotlib.rcParams["font.size"] = 11
+matplotlib.rcParams["pdf.use14corefonts"] = True
+matplotlib.rcParams["pdf.fonttype"] = 42
+matplotlib.rcParams["ps.fonttype"] = 42
+matplotlib.rcParams["font.family"] = "sans-serif"
+matplotlib.rcParams["font.sans-serif"] = ["Helvetica"]
+matplotlib.rcParams["figure.max_open_warning"] = 20000
+
+
+reseed = 42
+random.seed(reseed)
+np.random.seed(reseed)
+random_state = check_random_state(reseed)
+
+verbose = True
+sc.settings.verbosity = 2  # verbosity: errors (0), warnings (1), info (2), hints (3)
+sc.settings.figdir = PLOTS_DIR
+sc.settings.writedir = OUT_DIR
+sc.settings.set_figure_params(
+    dpi=120,
+    dpi_save=600,
+    vector_friendly=True,
+    format="pdf",
+    transparent=True,
+    color_map="gnuplot_r",
+)
+sc.settings.autoshow = False
+sc.settings.autosave = True
+
+# k = int(snakemake.params["k"])
+k = 20
+ks = k + 10
+npcs = 50
+npcs_selected = npcs - 20
+min_shared_umis = 15
+n_top_hvg = 3000
+cb_fpr = 0.001
+paga_threshold = 1.0
+spread = 2
+threads = 80
+svm_fit_strength = 100
+```
+
+
+### Load data
+
+```{python}
+housekeeping = f"/data/data/housekeeping_mouse.tsv"
+hk_genes1 = []
+with open(housekeeping) as file:
+    while hk_genes := file.readline():
+        hk_genes1.append(hk_genes.rstrip())
+```
+
+
+```{python}
+reaction_penalties = pd.read_csv("../data/compass-PRJNA679294/reactions.tsv", sep="\t", index_col = 0)
+reaction_metadata = pd.read_csv("/data/data/reaction_metadata.csv", index_col = 0)
+
+adata = sc.read_h5ad(
+    f"../data/class_cello/PRJNA679294-astrocytes_dataset-{cb_fpr}-initial_selection.h5ad"
+)
+
+adata.obs["cell_id"] = adata.obs_names
+
+alldata = sc.read_h5ad(
+    f"../data/class_cello/PRJNA679294-whole_dataset-{cb_fpr}-cello_annotation.h5ad"
+)
+alldata = alldata[alldata.obs["ora_celltype"].isin(["Astrocytes", "Neurons"])]
+
+adata_norm = alldata[alldata.obs["condit"] == 0]
+adata_chronic_stress = alldata[alldata.obs["condit"] == 1]
+```
+
+```{python}
+adata_norm.obs["k_tree"] = adata_norm.obs["k_tree"].astype("category")
+```
+
+```{python}
+lxn_pos_astro_norm = adata_norm[
+    (
+        (adata_norm[:, "Lxn"].to_df() > 0).stack().values
+        & (adata_norm[:, "Rbfox3"].to_df() < 5).stack().values
+    )
+    & (adata_norm.obs_names.isin(adata.obs_names)),
+    :,
+]
+lxn_neg_astro_norm = adata_norm[
+    (
+        (adata_norm[:, "Lxn"].to_df() == 0).stack().values
+        & (adata_norm[:, "Rbfox3"].to_df() < 5).stack().values
+    )
+    & (adata_norm.obs_names.isin(adata.obs_names)),
+    :,
+]
+```
+
+```{python}
+adata_norm.obs["goi"] = adata_norm.obs["k_tree"]
+adata_norm.obs["goi"] = adata_norm.obs["goi"].cat.add_categories("Astro_LXN+")
+adata_norm.obs.loc[
+    lambda df: df.index.isin(lxn_pos_astro_norm.obs.index), "goi"
+] = "Astro_LXN+"
+adata_norm.obs["goi"] = adata_norm.obs["goi"].cat.add_categories("Astro_LXN-")
+adata_norm.obs.loc[
+    lambda df: df.index.isin(lxn_neg_astro_norm.obs.index), "goi"
+] = "Astro_LXN-"
+
+adata_norm = adata_norm[
+    adata_norm.obs["goi"].isin(
+        ["Astro_LXN+", "Astro_LXN-"]
+    )
+]
+adata_norm.obs["goi"] = adata_norm.obs["goi"].cat.remove_unused_categories()
+```
+
+
+```{python}
+adata_chronic_stress.obs["k_tree"] = adata_chronic_stress.obs["k_tree"].astype("category")
+adata_chronic_stress.raw.X
+```
+
+```{python}
+lxn_pos_astro_treatment = adata_chronic_stress[
+    (
+        (adata_chronic_stress[:, "Lxn"].to_df() > 0).stack().values
+        & (adata_chronic_stress[:, "Rbfox3"].to_df() < 5).stack().values
+    )
+    & (adata_chronic_stress.obs_names.isin(adata.obs_names)),
+    :,
+]
+lxn_neg_astro_treatment = adata_chronic_stress[
+    (
+        (adata_chronic_stress[:, "Lxn"].to_df() == 0).stack().values
+        & (adata_chronic_stress[:, "Rbfox3"].to_df() < 5).stack().values
+    )
+    & (adata_chronic_stress.obs_names.isin(adata.obs_names)),
+    :,
+]
+```
+
+```{python}
+adata_chronic_stress.obs["goi"] = adata_chronic_stress.obs["k_tree"]
+adata_chronic_stress.obs["goi"] = adata_chronic_stress.obs["goi"].cat.add_categories("Astro_LXN+")
+adata_chronic_stress.obs.loc[
+    lambda df: df.index.isin(lxn_pos_astro_treatment.obs.index), "goi"
+] = "Astro_LXN+"
+adata_chronic_stress.obs["goi"] = adata_chronic_stress.obs["goi"].cat.add_categories("Astro_LXN-")
+adata_chronic_stress.obs.loc[
+    lambda df: df.index.isin(lxn_neg_astro_treatment.obs.index), "goi"
+] = "Astro_LXN-"
+
+adata_chronic_stress = adata_chronic_stress[
+    adata_chronic_stress.obs["goi"].isin(
+        ["Astro_LXN+", "Astro_LXN-"]
+    )
+]
+adata_chronic_stress.obs["goi"] = adata_chronic_stress.obs["goi"].cat.remove_unused_categories()
+```
+
+```{python}
+LXNp_astro_norm = adata_norm[
+    adata_norm.obs["goi"].isin(
+        ["Astro_LXN+"]
+    )
+].obs
+LXNn_astro_norm = adata_norm[
+    adata_norm.obs["goi"].isin(
+        ["Astro_LXN-"]
+    )
+].obs
+
+LXNp_astro_treatment = adata_chronic_stress[
+    adata_chronic_stress.obs["goi"].isin(
+        ["Astro_LXN+"]
+    )
+].obs
+LXNn_astro_treatment = adata_chronic_stress[
+    adata_chronic_stress.obs["goi"].isin(
+        ["Astro_LXN-"]
+    )
+].obs
+```
+
+```{python}
+def get_reaction_consistencies(compass_reaction_penalties, min_range=1e-3):
+    """
+        Converts the raw penalties outputs of compass into scores per reactions where higher numbers indicate more activity
+    """
+    df = -np.log(compass_reaction_penalties + 1)
+    df = df[df.max(axis=1) - df.min(axis=1) >= min_range]
+    df = df - df.min().min()
+    return df
+```
+
+```{python}
+reaction_consistencies = get_reaction_consistencies(reaction_penalties, min_range=1e-9)
+```
+
+```{python}
+wilcox_results_treatment_pvn = wilcoxon_test(
+    reaction_consistencies, LXNp_astro_treatment.index, LXNn_astro_treatment.index
+)
+wilcox_results_treatment_pvn["metadata_r_id"] = ""
+for r in wilcox_results_treatment_pvn.index:
+    if r in reaction_metadata.index:
+        wilcox_results_treatment_pvn.loc[r, "metadata_r_id"] = r
+    elif r[:-4] in reaction_metadata.index:
+        wilcox_results_treatment_pvn.loc[r, "metadata_r_id"] = r[:-4]
+    else:
+        print("Should not occur")
+```
+
+```{python}
+W_treatment_pvn = wilcox_results_treatment_pvn.merge(
+    reaction_metadata,
+    how="left",
+    left_on="metadata_r_id",
+    right_index=True,
+    validate="m:1",
+)
+W_treatment_pvn = W_treatment_pvn[W_treatment_pvn["confidence"].isin([0, 4])]
+W_treatment_pvn = W_treatment_pvn[~W_treatment_pvn["EC_number"].isna()]
+W_treatment_pvn.loc[
+    (W_treatment_pvn["formula"].map(lambda x: "[m]" not in x))
+    & (W_treatment_pvn["subsystem"] == "Citric acid cycle"),
+    "subsystem",
+] = "Other"
+
+
+```
+
+```{python}
+def plot_differential_scores(data, title, c):
+    plt.figure(figsize=(10, 10))
+    axs = plt.gca()
+    axs.scatter(data["cohens_d"], -np.log10(data["adjusted_pval"]), c=c)
+    axs.set_xlabel("Cohen's d", fontsize=16)
+    axs.set_ylabel("-log10 (Wilcoxon-adjusted p)", fontsize=16)
+    # Everything after this should be tweaked depending on your application
+    axs.set_xlim(-2.2, 2.2)
+    axs.axvline(0, dashes=(3, 3), c="black")
+    axs.axhline(1, dashes=(3, 3), c="black")
+    axs.set_title(title, fontdict={"fontsize": 20})
+    axs.annotate(
+        "",
+        xy=(0.5, -0.08),
+        xycoords="axes fraction",
+        xytext=(0, -0.08),
+        arrowprops=dict(arrowstyle="<-", color="#348C73", linewidth=4),
+    )
+    axs.annotate("LXNp", xy=(0.75, -0.12), xycoords="axes fraction", fontsize=16)
+    axs.annotate(
+        "",
+        xy=(0.5, -0.08),
+        xycoords="axes fraction",
+        xytext=(1, -0.08),
+        arrowprops=dict(arrowstyle="<-", color="#E92E87", linewidth=4),
+    )
+    axs.annotate("LXNn", xy=(0.25, -0.12), xycoords="axes fraction", fontsize=16)
+    for r in data.index:
+        if r in labeled_reactions:
+            x = data.loc[r, "cohens_d"]
+            y = -np.log10(data.loc[r, "adjusted_pval"])
+            offset = (20, 0)
+            if x < 0:
+                offset = (-100, -40)
+            axs.annotate(
+                labeled_reactions[r],
+                (x, y),
+                xytext=offset,
+                textcoords="offset pixels",
+                arrowprops={"arrowstyle": "-"},
+            )
+
+
+```
+
+
+```{python}
+filtered_data_treatment_pvn = pd.concat(
+    [
+        W_treatment_pvn[W_treatment_pvn["subsystem"] == "Glycolysis/gluconeogenesis"],
+        W_treatment_pvn[W_treatment_pvn["subsystem"] == "Citric acid cycle"],
+        W_treatment_pvn[W_treatment_pvn["subsystem"].isin(amino_acid_metab)],
+        W_treatment_pvn[W_treatment_pvn["subsystem"] == "Fatty acid oxidation"],
+    ]
+)
+```
+
+```{python}
+data_treatment_pvn = W_treatment_pvn[
+    W_treatment_pvn["subsystem"] == "Glycolysis/gluconeogenesis"
+]
+plot_differential_scores(data_treatment_pvn, title="Glycolysis", c="#695D73")
+```
+
+```{python}
+data_treatment_pvn = W_treatment_pvn[
+    W_treatment_pvn["subsystem"] == "Citric acid cycle"
+]
+plot_differential_scores(data_treatment_pvn, title="TCA Cycle", c="#D3A991")
+```
+
+```{python}
+data_treatment_pvn = W_treatment_pvn[
+    W_treatment_pvn["subsystem"] == "Citric acid cycle"
+]
+plot_differential_scores(data_treatment_pvn, title="TCA Cycle", c="#D3A991")
+```
+
+```{python}
+data_treatment_pvn = W_treatment_pvn[
+    W_treatment_pvn["subsystem"] == "Citric acid cycle"
+]
+plot_differential_scores(data_treatment_pvn, title="TCA Cycle", c="#D3A991")
+```
+
+```{python}
+data_treatment_pvn = W_treatment_pvn[
+    ~W_treatment_pvn["subsystem"].isin(["Miscellaneous", "Unassigned"])
+]
+data_treatment_pvn = data_treatment_pvn[
+    ~data_treatment_pvn["subsystem"].map(
+        lambda x: "Transport" in x or "Exchange" in x or x == "Other"
+    )
+]
+items, counts = np.unique(data_treatment_pvn["subsystem"], return_counts=True)
+items = [items[i] for i in range(len(items)) if counts[i] > 5]  # filter(n() > 5) %>%
+data_treatment_pvn = data_treatment_pvn[data_treatment_pvn["subsystem"].isin(items)]
+```
+
+
+```{python}
+plt.figure(figsize=(12, 12))
+axs = plt.gca()
+# Sorts the reactions for plotting
+d_treatment_pvn = (
+    data_treatment_pvn[data_treatment_pvn["adjusted_pval"] < 0.1]
+    .groupby("subsystem")["cohens_d"]
+    .median()
+    .abs()
+)
+axs.scatter(
+    d_treatment_pvn[d_treatment_pvn.argsort],
+    d_treatment_pvn[d_treatment_pvn.argsort].index,
+    alpha=0,
+)
+color = data_treatment_pvn["cohens_d"].map(lambda x: "r" if x >= 0 else "b")
+alpha = data_treatment_pvn["adjusted_pval"].map(lambda x: 1.0 if x < 0.1 else 0.25)
+axs.scatter(
+    data_treatment_pvn["cohens_d"],
+    data_treatment_pvn["subsystem"],
+    c=color,
+    alpha=alpha,
+)
+axs.set_xlabel("Cohen's d")
+```
+
+```{python}
+wilcox_results_norm_pvn = wilcoxon_test(
+    reaction_consistencies, LXNp_astro_norm, LXNn_astro_norm
+)
+wilcox_results_norm_pvn["metadata_r_id"] = ""
+for r in wilcox_results_norm_pvn.index:
+    if r in reaction_metadata.index:
+        wilcox_results_norm_pvn.loc[r, "metadata_r_id"] = r
+    elif r[:-4] in reaction_metadata.index:
+        wilcox_results_norm_pvn.loc[r, "metadata_r_id"] = r[:-4]
+    else:
+        print("Should not occur")
+```
+
+```{python}
+W_norm_pvn = wilcox_results_norm_pvn.merge(
+    reaction_metadata,
+    how="left",
+    left_on="metadata_r_id",
+    right_index=True,
+    validate="m:1",
+)
+W_norm_pvn = W_norm_pvn[W_norm_pvn["confidence"].isin([0, 4])]
+W_norm_pvn = W_norm_pvn[~W_norm_pvn["EC_number"].isna()]
+W_norm_pvn.loc[
+    (W_norm_pvn["formula"].map(lambda x: "[m]" not in x))
+    & (W_norm_pvn["subsystem"] == "Citric acid cycle"),
+    "subsystem",
+] = "Other"
+
+
+```
+
+
+```{python}
+filtered_data_norm_pvn = pd.concat(
+    [
+        W_norm_pvn[W_norm_pvn["subsystem"] == "Glycolysis/gluconeogenesis"],
+        W_norm_pvn[W_norm_pvn["subsystem"] == "Citric acid cycle"],
+        W_norm_pvn[W_norm_pvn["subsystem"].isin(amino_acid_metab)],
+        W_norm_pvn[W_norm_pvn["subsystem"] == "Fatty acid oxidation"],
+    ]
+)
+```
+
+```{python}
+data_norm_pvn = W_norm_pvn[W_norm_pvn["subsystem"] == "Glycolysis/gluconeogenesis"]
+plot_differential_scores(data_norm_pvn, title="Glycolysis", c="#695D73")
+```
+
+```{python}
+data_norm_pvn = W_norm_pvn[W_norm_pvn["subsystem"] == "Citric acid cycle"]
+plot_differential_scores(data_norm_pvn, title="TCA Cycle", c="#D3A991")
+```
+
+```{python}
+data_norm_pvn = W_norm_pvn[W_norm_pvn["subsystem"] == "Citric acid cycle"]
+plot_differential_scores(data_norm_pvn, title="TCA Cycle", c="#D3A991")
+```
+
+```{python}
+data_norm_pvn = W_norm_pvn[W_norm_pvn["subsystem"] == "Citric acid cycle"]
+plot_differential_scores(data_norm_pvn, title="TCA Cycle", c="#D3A991")
+```
+
+```{python}
+data_norm_pvn = W_norm_pvn[
+    ~W_norm_pvn["subsystem"].isin(["Miscellaneous", "Unassigned"])
+]
+data_norm_pvn = data_norm_pvn[
+    ~data_norm_pvn["subsystem"].map(
+        lambda x: "Transport" in x or "Exchange" in x or x == "Other"
+    )
+]
+items, counts = np.unique(data_norm_pvn["subsystem"], return_counts=True)
+items = [items[i] for i in range(len(items)) if counts[i] > 5]  # filter(n() > 5) %>%
+data_norm_pvn = data_norm_pvn[data_norm_pvn["subsystem"].isin(items)]
+```
+
+
+```{python}
+plt.figure(figsize=(12, 12))
+axs = plt.gca()
+# Sorts the reactions for plotting
+d_norm_pvn = (
+    data_norm_pvn[data_norm_pvn["adjusted_pval"] < 0.1]
+    .groupby("subsystem")["cohens_d"]
+    .median()
+    .abs()
+)
+axs.scatter(
+    d_norm_pvn[d_norm_pvn.argsort], d_norm_pvn[d_norm_pvn.argsort].index, alpha=0
+)
+color = data_norm_pvn["cohens_d"].map(lambda x: "r" if x >= 0 else "b")
+alpha = data_norm_pvn["adjusted_pval"].map(lambda x: 1.0 if x < 0.1 else 0.25)
+axs.scatter(data_norm_pvn["cohens_d"], data_norm_pvn["subsystem"], c=color, alpha=alpha)
+axs.set_xlabel("Cohen's d")
+```
+
+```{python}
+wilcox_results_norm_vs_treatment_pvn = wilcoxon_test(
+    reaction_consistencies, LXNp_astro_treatment, LXNp_astro_norm
+)
+wilcox_results_norm_vs_treatment_pvn["metadata_r_id"] = ""
+for r in wilcox_results_norm_vs_treatment_pvn.index:
+    if r in reaction_metadata.index:
+        wilcox_results_norm_vs_treatment_pvn.loc[r, "metadata_r_id"] = r
+    elif r[:-4] in reaction_metadata.index:
+        wilcox_results_norm_vs_treatment_pvn.loc[r, "metadata_r_id"] = r[:-4]
+    else:
+        print("Should not occur")
+```
+
+```{python}
+W_norm_vs_treatment_pvn = wilcox_results_norm_vs_treatment_pvn.merge(
+    reaction_metadata,
+    how="left",
+    left_on="metadata_r_id",
+    right_index=True,
+    validate="m:1",
+)
+W_norm_vs_treatment_pvn = W_norm_vs_treatment_pvn[
+    W_norm_vs_treatment_pvn["confidence"].isin([0, 4])
+]
+W_norm_vs_treatment_pvn = W_norm_vs_treatment_pvn[
+    ~W_norm_vs_treatment_pvn["EC_number"].isna()
+]
+W_norm_vs_treatment_pvn.loc[
+    (W_norm_vs_treatment_pvn["formula"].map(lambda x: "[m]" not in x))
+    & (W_norm_vs_treatment_pvn["subsystem"] == "Citric acid cycle"),
+    "subsystem",
+] = "Other"
+
+
+```
+
+```{python}
+def plot_differential_scores_norm_vs_treatment(data, title, c):
+    plt.figure(figsize=(10, 10))
+    axs = plt.gca()
+    axs.scatter(data["cohens_d"], -np.log10(data["adjusted_pval"]), c=c)
+    axs.set_xlabel("Cohen's d", fontsize=16)
+    axs.set_ylabel("-log10 (Wilcoxon-adjusted p)", fontsize=16)
+    # Everything after this should be tweaked depending on your application
+    axs.set_xlim(-2.2, 2.2)
+    axs.axvline(0, dashes=(3, 3), c="black")
+    axs.axhline(1, dashes=(3, 3), c="black")
+    axs.set_title(title, fontdict={"fontsize": 20})
+    axs.annotate(
+        "",
+        xy=(0.5, -0.08),
+        xycoords="axes fraction",
+        xytext=(0, -0.08),
+        arrowprops=dict(arrowstyle="<-", color="#348C73", linewidth=4),
+    )
+    axs.annotate(
+        "LXNp_treatment", xy=(0.75, -0.12), xycoords="axes fraction", fontsize=16
+    )
+    axs.annotate(
+        "",
+        xy=(0.5, -0.08),
+        xycoords="axes fraction",
+        xytext=(1, -0.08),
+        arrowprops=dict(arrowstyle="<-", color="#E92E87", linewidth=4),
+    )
+    axs.annotate("LXNp_norm", xy=(0.25, -0.12), xycoords="axes fraction", fontsize=16)
+    for r in data.index:
+        if r in labeled_reactions:
+            x = data.loc[r, "cohens_d"]
+            y = -np.log10(data.loc[r, "adjusted_pval"])
+            offset = (20, 0)
+            if x < 0:
+                offset = (-100, -40)
+            axs.annotate(
+                labeled_reactions[r],
+                (x, y),
+                xytext=offset,
+                textcoords="offset pixels",
+                arrowprops={"arrowstyle": "-"},
+            )
+
+
+```
+
+
+```{python}
+filtered_data_norm_vs_treatment_pvn = pd.concat(
+    [
+        W_norm_vs_treatment_pvn[
+            W_norm_vs_treatment_pvn["subsystem"] == "Glycolysis/gluconeogenesis"
+        ],
+        W_norm_vs_treatment_pvn[
+            W_norm_vs_treatment_pvn["subsystem"] == "Citric acid cycle"
+        ],
+        W_norm_vs_treatment_pvn[
+            W_norm_vs_treatment_pvn["subsystem"].isin(amino_acid_metab)
+        ],
+        W_norm_vs_treatment_pvn[
+            W_norm_vs_treatment_pvn["subsystem"] == "Fatty acid oxidation"
+        ],
+    ]
+)
+```
+
+```{python}
+data_norm_vs_treatment_pvn = W_norm_vs_treatment_pvn[
+    W_norm_vs_treatment_pvn["subsystem"] == "Glycolysis/gluconeogenesis"
+]
+plot_differential_scores_norm_vs_treatment(
+    data_norm_vs_treatment_pvn, title="Glycolysis", c="#695D73"
+)
+```
+
+```{python}
+data_norm_vs_treatment_pvn = W_norm_vs_treatment_pvn[
+    W_norm_vs_treatment_pvn["subsystem"] == "Citric acid cycle"
+]
+plot_differential_scores_norm_vs_treatment(
+    data_norm_vs_treatment_pvn, title="TCA Cycle", c="#D3A991"
+)
+```
+
+```{python}
+data_norm_vs_treatment_pvn = W_norm_vs_treatment_pvn[
+    W_norm_vs_treatment_pvn["subsystem"] == "Citric acid cycle"
+]
+plot_differential_scores_norm_vs_treatment(
+    data_norm_vs_treatment_pvn, title="TCA Cycle", c="#D3A991"
+)
+```
+
+```{python}
+data_norm_vs_treatment_pvn = W_norm_vs_treatment_pvn[
+    W_norm_vs_treatment_pvn["subsystem"] == "Citric acid cycle"
+]
+plot_differential_scores_norm_vs_treatment(
+    data_norm_vs_treatment_pvn, title="TCA Cycle", c="#D3A991"
+)
+```
+
+```{python}
+data_norm_vs_treatment_pvn = W_norm_vs_treatment_pvn[
+    ~W_norm_vs_treatment_pvn["subsystem"].isin(["Miscellaneous", "Unassigned"])
+]
+data_norm_vs_treatment_pvn = data_norm_vs_treatment_pvn[
+    ~data_norm_vs_treatment_pvn["subsystem"].map(
+        lambda x: "Transport" in x or "Exchange" in x or x == "Other"
+    )
+]
+items, counts = np.unique(data_norm_vs_treatment_pvn["subsystem"], return_counts=True)
+items = [items[i] for i in range(len(items)) if counts[i] > 5]  # filter(n() > 5) %>%
+data_norm_vs_treatment_pvn = data_norm_vs_treatment_pvn[
+    data_norm_vs_treatment_pvn["subsystem"].isin(items)
+]
+```
+
+
+```{python}
+plt.figure(figsize=(12, 12))
+axs = plt.gca()
+# Sorts the reactions for plotting
+d_norm_vs_treatment_pvn = (
+    data_norm_vs_treatment_pvn[data_norm_vs_treatment_pvn["adjusted_pval"] < 0.1]
+    .groupby("subsystem")["cohens_d"]
+    .median()
+    .abs()
+)
+axs.scatter(
+    d_norm_vs_treatment_pvn[d_norm_vs_treatment_pvn.argsort],
+    d_norm_vs_treatment_pvn[d_norm_vs_treatment_pvn.argsort].index,
+    alpha=0,
+)
+color = data_norm_vs_treatment_pvn["cohens_d"].map(lambda x: "r" if x >= 0 else "b")
+alpha = data_norm_vs_treatment_pvn["adjusted_pval"].map(
+    lambda x: 1.0 if x < 0.1 else 0.25
+)
+axs.scatter(
+    data_norm_vs_treatment_pvn["cohens_d"],
+    data_norm_vs_treatment_pvn["subsystem"],
+    c=color,
+    alpha=alpha,
+)
+axs.set_xlabel("Cohen's d")
+```
+
+
+```{python}
+wilcox_results_n_norm_vs_treatment_pvn = wilcoxon_test(
+    reaction_consistencies, LXNn_astro_treatment, LXNn_astro_norm
+)
+wilcox_results_n_norm_vs_treatment_pvn["metadata_r_id"] = ""
+for r in wilcox_results_n_norm_vs_treatment_pvn.index:
+    if r in reaction_metadata.index:
+        wilcox_results_n_norm_vs_treatment_pvn.loc[r, "metadata_r_id"] = r
+    elif r[:-4] in reaction_metadata.index:
+        wilcox_results_n_norm_vs_treatment_pvn.loc[r, "metadata_r_id"] = r[:-4]
+    else:
+        print("Should not occur")
+```
+
+```{python}
+W_n_norm_vs_treatment_pvn = wilcox_results_n_norm_vs_treatment_pvn.merge(
+    reaction_metadata,
+    how="left",
+    left_on="metadata_r_id",
+    right_index=True,
+    validate="m:1",
+)
+W_n_norm_vs_treatment_pvn = W_n_norm_vs_treatment_pvn[
+    W_n_norm_vs_treatment_pvn["confidence"].isin([0, 4])
+]
+W_n_norm_vs_treatment_pvn = W_n_norm_vs_treatment_pvn[
+    ~W_n_norm_vs_treatment_pvn["EC_number"].isna()
+]
+W_n_norm_vs_treatment_pvn.loc[
+    (W_n_norm_vs_treatment_pvn["formula"].map(lambda x: "[m]" not in x))
+    & (W_n_norm_vs_treatment_pvn["subsystem"] == "Citric acid cycle"),
+    "subsystem",
+] = "Other"
+
+
+```
+
+```{python}
+def plot_differential_scores_n_norm_vs_treatment(data, title, c):
+    plt.figure(figsize=(10, 10))
+    axs = plt.gca()
+    axs.scatter(data["cohens_d"], -np.log10(data["adjusted_pval"]), c=c)
+    axs.set_xlabel("Cohen's d", fontsize=16)
+    axs.set_ylabel("-log10 (Wilcoxon-adjusted p)", fontsize=16)
+    # Everything after this should be tweaked depending on your application
+    axs.set_xlim(-2.2, 2.2)
+    axs.axvline(0, dashes=(3, 3), c="black")
+    axs.axhline(1, dashes=(3, 3), c="black")
+    axs.set_title(title, fontdict={"fontsize": 20})
+    axs.annotate(
+        "",
+        xy=(0.5, -0.08),
+        xycoords="axes fraction",
+        xytext=(0, -0.08),
+        arrowprops=dict(arrowstyle="<-", color="#348C73", linewidth=4),
+    )
+    axs.annotate(
+        "LXNn_treatment", xy=(0.75, -0.12), xycoords="axes fraction", fontsize=16
+    )
+    axs.annotate(
+        "",
+        xy=(0.5, -0.08),
+        xycoords="axes fraction",
+        xytext=(1, -0.08),
+        arrowprops=dict(arrowstyle="<-", color="#E92E87", linewidth=4),
+    )
+    axs.annotate("LXNn_norm", xy=(0.25, -0.12), xycoords="axes fraction", fontsize=16)
+    for r in data.index:
+        if r in labeled_reactions:
+            x = data.loc[r, "cohens_d"]
+            y = -np.log10(data.loc[r, "adjusted_pval"])
+            offset = (20, 0)
+            if x < 0:
+                offset = (-100, -40)
+            axs.annotate(
+                labeled_reactions[r],
+                (x, y),
+                xytext=offset,
+                textcoords="offset pixels",
+                arrowprops={"arrowstyle": "-"},
+            )
+
+
+```
+
+
+```{python}
+filtered_data_n_norm_vs_treatment_pvn = pd.concat(
+    [
+        W_n_norm_vs_treatment_pvn[
+            W_n_norm_vs_treatment_pvn["subsystem"] == "Glycolysis/gluconeogenesis"
+        ],
+        W_n_norm_vs_treatment_pvn[
+            W_n_norm_vs_treatment_pvn["subsystem"] == "Citric acid cycle"
+        ],
+        W_n_norm_vs_treatment_pvn[
+            W_n_norm_vs_treatment_pvn["subsystem"].isin(amino_acid_metab)
+        ],
+        W_n_norm_vs_treatment_pvn[
+            W_n_norm_vs_treatment_pvn["subsystem"] == "Fatty acid oxidation"
+        ],
+    ]
+)
+```
+
+```{python}
+data_n_norm_vs_treatment_pvn = W_n_norm_vs_treatment_pvn[
+    W_n_norm_vs_treatment_pvn["subsystem"] == "Glycolysis/gluconeogenesis"
+]
+plot_differential_scores_n_norm_vs_treatment(
+    data_n_norm_vs_treatment_pvn, title="Glycolysis", c="#695D73"
+)
+```
+
+```{python}
+data_n_norm_vs_treatment_pvn = W_n_norm_vs_treatment_pvn[
+    W_n_norm_vs_treatment_pvn["subsystem"] == "Citric acid cycle"
+]
+plot_differential_scores_n_norm_vs_treatment(
+    data_n_norm_vs_treatment_pvn, title="TCA Cycle", c="#D3A991"
+)
+```
+
+```{python}
+data_n_norm_vs_treatment_pvn = W_n_norm_vs_treatment_pvn[
+    W_n_norm_vs_treatment_pvn["subsystem"] == "Citric acid cycle"
+]
+plot_differential_scores_n_norm_vs_treatment(
+    data_n_norm_vs_treatment_pvn, title="TCA Cycle", c="#D3A991"
+)
+```
+
+```{python}
+data_n_norm_vs_treatment_pvn = W_n_norm_vs_treatment_pvn[
+    W_n_norm_vs_treatment_pvn["subsystem"] == "Citric acid cycle"
+]
+plot_differential_scores_n_norm_vs_treatment(
+    data_n_norm_vs_treatment_pvn, title="TCA Cycle", c="#D3A991"
+)
+```
+
+```{python}
+data_n_norm_vs_treatment_pvn = W_n_norm_vs_treatment_pvn[
+    ~W_n_norm_vs_treatment_pvn["subsystem"].isin(["Miscellaneous", "Unassigned"])
+]
+data_n_norm_vs_treatment_pvn = data_n_norm_vs_treatment_pvn[
+    ~data_n_norm_vs_treatment_pvn["subsystem"].map(
+        lambda x: "Transport" in x or "Exchange" in x or x == "Other"
+    )
+]
+items, counts = np.unique(data_n_norm_vs_treatment_pvn["subsystem"], return_counts=True)
+items = [items[i] for i in range(len(items)) if counts[i] > 5]  # filter(n() > 5) %>%
+data_n_norm_vs_treatment_pvn = data_n_norm_vs_treatment_pvn[
+    data_n_norm_vs_treatment_pvn["subsystem"].isin(items)
+]
+```
+
+
+```{python}
+plt.figure(figsize=(12, 12))
+axs = plt.gca()
+# Sorts the reactions for plotting
+d_n_norm_vs_treatment_pvn = (
+    data_n_norm_vs_treatment_pvn[data_n_norm_vs_treatment_pvn["adjusted_pval"] < 0.1]
+    .groupby("subsystem")["cohens_d"]
+    .median()
+    .abs()
+)
+axs.scatter(
+    d_n_norm_vs_treatment_pvn[d_n_norm_vs_treatment_pvn.argsort],
+    d_n_norm_vs_treatment_pvn[d_n_norm_vs_treatment_pvn.argsort].index,
+    alpha=0,
+)
+color = data_n_norm_vs_treatment_pvn["cohens_d"].map(lambda x: "r" if x >= 0 else "b")
+alpha = data_n_norm_vs_treatment_pvn["adjusted_pval"].map(
+    lambda x: 1.0 if x < 0.1 else 0.25
+)
+axs.scatter(
+    data_n_norm_vs_treatment_pvn["cohens_d"],
+    data_n_norm_vs_treatment_pvn["subsystem"],
+    c=color,
+    alpha=alpha,
+)
+axs.set_xlabel("Cohen's d")
+```
+
+
+```{python}
+print(watermark())
+print(watermark(iversions=True, globals_=globals()))
+```
