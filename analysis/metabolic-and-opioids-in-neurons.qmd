@@ -1,0 +1,511 @@
+---
+title: "Expression analysis of PVN neurons with focus on Crh"
+author: "Evgenii O. Tretiakov"
+date: "`r Sys.Date()`"
+format:
+  html:
+    toc: true
+    df-print: paged
+    code-fold: true
+    fig-width: 9
+    fig-height: 12
+    fig-format: retina
+    fig-responsive: true
+    fig-dpi: 300
+  pdf:
+    colorlinks: true
+    fontsize: 12pt
+execute:
+  keep-md: true
+  echo: true
+  error: false
+  message: false
+  warning: false
+  debug: false
+knitr:
+  opts_chunk:
+    autodep: true
+    fig.align: center
+    fig.retina: 2
+    fig.width: 14
+    fig.height: 12
+---
+
+```{r}
+#| label: setup
+#| include: false
+DOCNAME <- "metabolic-and-opioids-in-neurons"
+NOW <- Sys.time()
+
+# Time chunks during knitting
+knitr::knit_hooks$set(timeit = function(before) {
+  if (before) {
+    print(paste("Start:", Sys.time()))
+    NOW <<- Sys.time()
+  } else {
+    print(paste("Stop:", Sys.time()))
+    print(Sys.time() - NOW)
+  }
+})
+
+knitr::knit_hooks$set(debug = function(before, options, envir) {
+  if (!before) {
+    message(
+      paste(names(envir), as.list(envir),
+        sep = " = ", collapse = "\n"
+      )
+    )
+  }
+})
+
+knitr::opts_chunk$set(
+  cache          = FALSE,
+  dev            = c("png", "pdf"),
+  timeit         = TRUE
+)
+
+Sys.setenv(RETICULATE_PYTHON = "/opt/python/3.8.8/bin/python")
+reticulate::use_condaenv("/opt/python/3.8.8/bin/python")
+```
+
+## Setup parameters
+
+```{r}
+#| label: libraries
+#| cache: false
+# Load tidyverse infrastructure packages
+suppressPackageStartupMessages({
+  library(future)
+  library(here)
+  library(tidyverse)
+  library(magrittr)
+  library(stringr)
+  library(skimr)
+  library(RColorBrewer)
+  library(viridis)
+})
+
+
+# Load packages for scRNA-seq analysis and visualisation
+suppressPackageStartupMessages({
+  library(UpSetR)
+  library(ggplot2)
+  library(cowplot)
+  library(patchwork)
+  library(ggstatsplot)
+  library(anndata)
+  library(sceasy)
+  library(Seurat)
+  library(SeuratDisk)
+  library(SeuratWrappers)
+  library(scCustomize)
+})
+
+sc <- import("scanpy", convert = FALSE)
+```
+
+### Set paths
+
+```{r}
+#| label: paths
+src_dir <- here("code")
+data_dir <- here("data")
+output_dir <- here("output")
+plots_dir <- here(output_dir, "figures/")
+tables_dir <- here(output_dir, "tables/")
+```
+
+### Load helper functions and gene-sets
+
+```{r}
+#| label: source
+#| cache: false
+source(here(src_dir, "genes.R"))
+source(here(src_dir, "functions.R"))
+```
+
+### Set fixed variables
+
+```{r}
+#| label: params-computation
+#| cache: false
+# set seed
+reseed <- 42
+set.seed(seed = reseed)
+
+# Parameters for parallel execution
+n_cores <- 8
+plan("multisession", workers = n_cores)
+options(
+  future.globals.maxSize = 100000 * 1024^2,
+  future.rng.onMisuse = "ignore"
+)
+plan()
+
+
+# ggplot2 theme
+theme_set(ggmin::theme_powerpoint())
+```
+
+## Load selected astrocytes data from Lopez JP et al (2021)
+
+```{r}
+#| label: load-lopez2021-PVN-data
+#| cache: false
+anndata <- sc$read(here(
+  data_dir,
+  "class_cello/PRJNA679294-whole_dataset-0.001-cello_annotation.h5ad"
+))
+```
+
+### Convert adata object to R AnnDataR6 object.
+```{r}
+#| label: convert-lopez2021-PVN-to-r
+adata <- py_to_r(anndata)
+class(adata)
+class(adata$X)
+adata
+```
+
+```{r}
+#| label: convert-lopez2021-PVN-to-seurat
+expr_mtx <- t(as.matrix(adata$raw$X))
+colnames(expr_mtx) <- rownames(adata$X)
+rownames(expr_mtx) <- adata$var_names
+srt <- CreateSeuratObject(
+  expr_mtx,
+  assay = "RNA",
+  project = "individual_hypothalamic_nuclei_astrocytes_evaluation_dataset",
+  meta.data = as.data.frame(adata$obs)
+)
+
+Idents(srt) <- "ora_celltype"
+table(Idents(srt))
+```
+
+
+```{r}
+#| label: subset-lopez2021-PVN
+srt <- subset(srt, idents = c("Neurons"))
+
+Idents(srt) <- "libname"
+
+print(srt)
+rm(adata, anndata, expr_mtx)
+invisible(gc())
+table(Idents(srt))
+```
+
+```{r}
+#| label: opioid-system-genes
+opioid_system_genes <- c(
+    # Classical opioid receptors
+    "Oprd1",  # Delta opioid receptor
+    "Oprk1",  # Kappa opioid receptor 
+    "Oprl1",  # Nociceptin/orphanin FQ receptor
+    "Oprm1",  # Mu opioid receptor
+    
+    # Processing enzymes
+    "Pcsk1",  # Proprotein convertase 1
+    "Pcsk2",   # Proprotein convertase 2
+    
+    # Endogenous opioid precursors
+    "Pdyn",   # Prodynorphin
+    "Penk",   # Proenkephalin
+    #"Pomc",   # Proopiomelanocortin
+    "Pnoc"   # Prepronociceptin
+)
+```
+
+```{r}
+#| label: metabolic-signaling-genes
+metabolic_signaling_genes <- c(
+    # Receptor tyrosine kinases and ligands
+    "Alk",      # Anaplastic lymphoma kinase - neural development, metabolism
+    "Fam150a",  # ALK ligand 1/Augmentor-α - ALK receptor activator
+    "Fam150b",  # ALK ligand 2/Augmentor-β - ALK receptor activator
+    
+    # Melanocortin system
+    "Mc3r",     # Melanocortin 3 receptor - energy homeostasis, inflammation
+    "Mc4r",     # Melanocortin 4 receptor - appetite control, energy balance
+    
+    # Metabolic hormone receptors
+    "Lepr",     # Leptin receptor - energy balance, satiety
+    "Insr",     # Insulin receptor - glucose homeostasis
+    #"Igf1r",    # Insulin-like growth factor 1 receptor - growth, development
+    
+    # Signaling adaptors/regulators
+    "Lmo4",     # LIM domain only 4 - transcriptional regulation, metabolism
+    "Irs1",     # Insulin receptor substrate 1 - insulin signaling
+    "Irs4"      # Insulin receptor substrate 4 - insulin/leptin signaling
+)
+```
+
+```{r}
+#| label: scale-data
+
+all.genes <- rownames(srt)
+gene.scale <- c(
+  cnbn,
+  opioid_system_genes,
+  metabolic_signaling_genes,
+  np,
+  npr,
+  nmr,
+  neurotrans
+  ) |> 
+  unique() %>%
+  .[. %in% all.genes]
+srt <- NormalizeData(srt)
+srt <- FindVariableFeatures(srt, selection.method = "vst", nfeatures = 3000)
+srt <- ScaleData(srt, features = c(VariableFeatures(srt), gene.scale))
+```
+
+```{r}
+#| label: subset-lopez2021-PVN-to-np-positive-cells
+
+srt.bck <- srt
+srt <- subset(srt, subset = Oxt >= 1 | Trh > 0 | Crh > 0 | Sst >= 1 | Avp >= 1)
+Idents(srt) <- "ora_celltype"
+table(Idents(srt))
+```
+
+```{r}
+srt <- RunPCA(srt, npcs = 20, verbose = FALSE)
+
+
+invisible(gc())
+set.seed(reseed)
+if (!file.exists(here(data_dir, glue::glue("{DOCNAME}-init/{DOCNAME}-init-umap-search-ref.Rds")))) {
+  
+  source(here(src_dir, "scDEED.R"))
+  library(furrr)
+
+  permuted.srt <- Permuted(srt, K = 20)
+
+  invisible(gc())
+  set.seed(reseed)
+
+  umap_example <- scDEED(
+    input_data = srt,
+    K = 20,
+    n_neighbors = seq(from = 15, to = 35, by = 10),
+    min.dist = c(0.05, 0.1, 0.25, 0.5, 0.8),
+    reduction.method = "umap",
+    rerun = FALSE,
+    permuted = permuted.srt,
+    default_assay = "RNA"
+  )
+
+  dir.create(here(data_dir, sprintf("%s-init", DOCNAME)))
+  readr::write_rds(
+    x = umap_example,
+    file = here(data_dir, glue::glue("{DOCNAME}-init/{DOCNAME}-init-umap-search-ref.Rds"))
+  )
+} else {
+  umap_example <-
+    read_rds(here(data_dir, glue::glue("{DOCNAME}-init/{DOCNAME}-init-umap-search-ref.Rds")))
+}
+```
+
+```{r}
+#| label: calculate-graphs-and-embenddings
+
+srt <-
+  srt |>
+  FindNeighbors(
+    dims = 1:20,
+    k.param = umap_example$num_dubious |> 
+      dplyr::slice_min(order_by = number_dubious_cells, n = 1) |> 
+      pull(n_neighbors),
+    annoy.metric = "cosine",
+    n.trees = 100,
+    verbose = FALSE
+  ) |>
+  RunUMAP(
+    dims = 1:20,
+    reduction.name = "umap",
+    reduction.key = "UMAP_",
+    return.model = FALSE,
+    umap.method = "uwot",
+    n.epochs = 1000L,
+    n.neighbors = umap_example$num_dubious |> 
+      dplyr::slice_min(order_by = number_dubious_cells, n = 1) |> 
+      pull(n_neighbors),
+    min.dist = umap_example$num_dubious |> 
+      dplyr::slice_min(order_by = number_dubious_cells, n = 1) |> 
+      pull(min.dist),
+    seed.use = reseed,
+    verbose = FALSE
+  )
+```
+
+
+```{r}
+#| label: plot-lopez2021-pvn-condit-astro
+#| fig-width: 6
+#| fig-height: 7
+
+Idents(srt) <- "libname"
+DimPlot(srt)
+```
+
+
+```{r}
+#| label: plot-lopez2021-pvn-feature-cb
+#| fig-width: 18
+#| fig-height: 13
+FeaturePlot_scCustom(
+  srt,
+  reduction = "umap",
+  features = c(
+    metabolic_signaling_genes, 
+    opioid_system_genes,
+    "Slc17a6", "Gad1", "Gad2", "Crh", "Trh", "Oxt", "Sst"
+    ),
+  layer = "data",
+  label = F,
+  num_columns = 4
+) #* NoLegend()
+```
+
+
+```{r}
+#| label: e-cb-representation-lopez2021-pvn
+sbs_mtx <-
+  srt@assays$RNA@layers$data %>%
+  as.data.frame() %>%
+  t()
+
+rownames(sbs_mtx) <- colnames(srt)
+colnames(sbs_mtx) <- rownames(srt)
+
+# Filter features
+filt_low_genes <-
+  colSums(sbs_mtx) %>%
+  .[. > quantile(., 0.4)] %>%
+  names()
+sbs_mtx %<>% .[, filt_low_genes]
+
+min_filt_vector2 <-
+  sbs_mtx %>%
+  as_tibble() %>%
+  select(all_of(filt_low_genes)) %>%
+  summarise(across(.fns = ~ quantile(.x, .005))) %>%
+  as.list() %>%
+  map(as.double) %>%
+  simplify() %>%
+  .[filt_low_genes]
+
+# Prepare table of intersection sets analysis
+content_sbs_mtx <-
+  (sbs_mtx > min_filt_vector2) %>%
+  as_tibble() %>%
+  mutate_all(as.numeric) %>%
+  bind_cols(
+    srt@meta.data |> select(condit)
+  )
+
+```
+
+```{r}
+#| label: upset-group-e-cb-pvn-Adult-f2-astro-norm
+#| fig-height: 24
+#| fig-asp: 1.214
+upset(
+  as.data.frame(
+    content_sbs_mtx |>
+      filter(condit == 0) |>
+      select(
+        c(metabolic_signaling_genes, "Crh", "Trh", "Oxt") %>% .[. %in% colnames(content_sbs_mtx)]
+      )
+  ),
+  order.by = "freq",
+  cutoff = 3,
+  sets.x.label = "Number of cells",
+  number.angles = 0,
+  point.size = 3.5, line.size = 2,
+  text.scale = c(2, 1.6, 2, 1.3, 2, 1.1),
+  nsets = 30,
+  nintersects = 30,
+  sets = c(metabolic_signaling_genes, "Crh", "Trh", "Oxt") %>%
+    .[. %in% colnames(content_sbs_mtx)],
+  empty.intersections = NULL
+)
+
+skim(as.data.frame(
+    content_sbs_mtx |>
+      filter(condit == 0) |>
+      select(
+        c(metabolic_signaling_genes, "Crh", "Trh", "Oxt") %>% .[. %in% colnames(content_sbs_mtx)]
+      )
+  ))
+```
+
+```{r}
+#| label: upset-group-e-cb-pvn-Adult-f3-astro-norm
+#| fig-height: 24
+#| fig-asp: 1.214
+upset(
+  as.data.frame(
+    content_sbs_mtx |>
+      filter(condit == 0) |>
+      select(
+        c(opioid_system_genes, "Crh", "Trh", "Oxt") %>% .[. %in% colnames(content_sbs_mtx)]
+      )
+  ),
+  order.by = "freq",
+  cutoff = 3,
+  sets.x.label = "Number of cells",
+  number.angles = 0,
+  point.size = 3.5, line.size = 2,
+  text.scale = c(2, 1.6, 2, 1.3, 2, 1.1),
+  nsets = 30,
+  nintersects = 30,
+  sets = c(opioid_system_genes, "Crh", "Trh", "Oxt") %>%
+    .[. %in% colnames(content_sbs_mtx)],
+  empty.intersections = NULL
+)
+
+skim(as.data.frame(
+    content_sbs_mtx |>
+      filter(condit == 0) |>
+      select(
+        c(opioid_system_genes, "Crh", "Trh", "Oxt") %>% .[. %in% colnames(content_sbs_mtx)]
+      )
+  ))
+```
+
+```{r}
+#| label: upset-group-e-cb-pvn-Adult-f4-astro-norm
+#| fig-height: 24
+#| fig-asp: 1.214
+upset(
+  as.data.frame(
+    content_sbs_mtx |>
+      filter(condit == 0) |>
+      select(
+        c(metabolic_signaling_genes, opioid_system_genes, "Crh", "Trh", "Oxt") %>% .[. %in% colnames(content_sbs_mtx)]
+      )
+  ),
+  order.by = "freq",
+  cutoff = 3,
+  sets.x.label = "Number of cells",
+  number.angles = 0,
+  point.size = 3.5, line.size = 2,
+  text.scale = c(2, 1.6, 2, 1.3, 2, 1.1),
+  nsets = 30,
+  nintersects = 30,
+  sets = c(metabolic_signaling_genes, opioid_system_genes, "Crh", "Trh", "Oxt") %>%
+    .[. %in% colnames(content_sbs_mtx)],
+  empty.intersections = NULL
+)
+
+skim(as.data.frame(
+    content_sbs_mtx |>
+      filter(condit == 0) |>
+      select(
+        c(metabolic_signaling_genes, opioid_system_genes, "Crh", "Trh", "Oxt") %>% .[. %in% colnames(content_sbs_mtx)]
+      )
+  ))
+```
